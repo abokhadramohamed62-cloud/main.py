@@ -3,6 +3,7 @@ import sqlite3
 import threading
 from datetime import datetime
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton, WebAppInfo
 from telegram.ext import (
@@ -22,6 +23,7 @@ VERIFY_URL = "https://abokhadramohamed62-cloud.github.io"
 
 # ========== Flask السيرفر ==========
 flask_app = Flask(__name__)
+CORS(flask_app)
 
 @flask_app.route('/verify-cf', methods=['POST'])
 def verify_cf():
@@ -175,7 +177,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_data = get_user(user.id)
 
-    # أول حاجة: التحقق من Cloudflare
     if not user_data or user_data[7] == 0:
         await update.message.reply_text(
             "🛡️ **التحقق الأمني مطلوب**\n\n"
@@ -187,7 +188,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ثاني حاجة: التحقق من الاشتراك
     subscribed = await check_subscriptions(user.id, context)
     if not subscribed:
         await update.message.reply_text(
@@ -196,7 +196,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # إضافة المكافأة بعد التأكد من الاتنين
     if user_data and user_data[6] == 0:
         referred_by_id = verify_user(user.id)
         if referred_by_id:
