@@ -11,7 +11,6 @@ from telegram.ext import (
     MessageHandler, filters, ContextTypes
 )
 
-# ========== الإعدادات ==========
 BOT_TOKEN = os.getenv("BOT_TOKEN", "ضع_توكن_البوت_هنا")
 ADMIN_ID = 868999453
 CHANNELS = ["@Crypto_Dragon13"]
@@ -21,26 +20,79 @@ CURRENCY = "TON"
 CF_SECRET = os.getenv("CF_SECRET", "0x4AAAAAADg_QwNGvi2wp0eo")
 VERIFY_URL = "https://abokhadramohamed62-cloud.github.io"
 
-# ========== Flask السيرفر ==========
 flask_app = Flask(__name__)
 CORS(flask_app)
+
+bot_app = None
 
 @flask_app.route('/verify-cf', methods=['POST'])
 def verify_cf():
     data = request.json
     token = data.get('token')
     user_id = data.get('user_id')
+
     if not token or not user_id:
-        return jsonify({'success': False})
+        return jsonify({'success': False, 'reason': 'missing_data'})
+
+    ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+    if ip and ',' in ip:
+        ip = ip.split(',')[0].strip()
+
+    if is_ip_registered(ip):
+        return jsonify({'success': False, 'reason': 'ip_exists'})
+
     response = requests.post(
         'https://challenges.cloudflare.com/turnstile/v0/siteverify',
         data={'secret': CF_SECRET, 'response': token}
     )
     result = response.json()
+
     if result.get('success'):
-        set_cf_verified(int(user_id))
+        set_cf_verified(int(user_id), ip)
+        # ابعت رسالة للمُحيل لما المدعو يخلص التحقق
+        threading.Thread(target=notify_referrer, args=(int(user_id),)).start()
         return jsonify({'success': True})
-    return jsonify({'success': False})
+
+    return jsonify({'success': False, 'reason': 'cf_failed'})
+
+def notify_referrer(user_id):
+    import asyncio
+    conn = sqlite3.connect("bot.db")
+    c = conn.cursor()
+    c.execute("SELECT referred_by, verified FROM users WHERE user_id=?", (user_id,))
+    row = c.fetchone()
+    conn.close()
+
+    if not row:
+        return
+
+    referred_by = row[0]
+    already_verified = row[1]
+
+    if already_verified == 1 or not referred_by or referred_by == user_id:
+        return
+
+    # أضف المكافأة للمُحيل
+    conn = sqlite3.connect("bot.db")
+    c = conn.cursor()
+    c.execute("SELECT user_id FROM users WHERE user_id=?", (referred_by,))
+    if c.fetchone():
+        c.execute("UPDATE users SET balance=balance+?, referrals=referrals+1 WHERE user_id=?",
+                  (REWARD_PER_REFERRAL, referred_by))
+        c.execute("UPDATE users SET verified=1 WHERE user_id=?", (user_id,))
+        conn.commit()
+    conn.close()
+
+    if bot_app:
+        async def send_msg():
+            try:
+                await bot_app.bot.send_message(
+                    referred_by,
+                    f"🎉 انضم شخص جديد عبر رابطك!\n💰 حصلت على +{REWARD_PER_REFERRAL} {CURRENCY}"
+                )
+            except:
+                pass
+        asyncio.run(send_msg())
 
 @flask_app.route('/')
 def home():
@@ -49,7 +101,6 @@ def home():
 def run_flask():
     flask_app.run(host='0.0.0.0', port=int(os.getenv('PORT', 8080)))
 
-# ========== قاعدة البيانات ==========
 def init_db():
     conn = sqlite3.connect("bot.db")
     c = conn.cursor()
@@ -61,7 +112,8 @@ def init_db():
         referred_by INTEGER DEFAULT NULL,
         joined_at TEXT,
         verified INTEGER DEFAULT 0,
-        cf_verified INTEGER DEFAULT 0
+        cf_verified INTEGER DEFAULT 0,
+        ip_address TEXT DEFAULT NULL
     )''')
     c.execute('''CREATE TABLE IF NOT EXISTS withdrawals (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -73,6 +125,16 @@ def init_db():
     )''')
     conn.commit()
     conn.close()
+
+def is_ip_registered(ip):
+    if not ip:
+        return False
+    conn = sqlite3.connect("bot.db")
+    c = conn.cursor()
+    c.execute("SELECT user_id FROM users WHERE ip_address=? AND cf_verified=1", (ip,))
+    row = c.fetchone()
+    conn.close()
+    return row is not None
 
 def get_user(user_id):
     conn = sqlite3.connect("bot.db")
@@ -92,31 +154,12 @@ def add_user(user_id, username, referred_by=None):
         conn.commit()
     conn.close()
 
-def set_cf_verified(user_id):
+def set_cf_verified(user_id, ip=None):
     conn = sqlite3.connect("bot.db")
     c = conn.cursor()
-    c.execute("UPDATE users SET cf_verified=1 WHERE user_id=?", (user_id,))
+    c.execute("UPDATE users SET cf_verified=1, ip_address=? WHERE user_id=?", (ip, user_id))
     conn.commit()
     conn.close()
-
-def verify_user(user_id):
-    conn = sqlite3.connect("bot.db")
-    c = conn.cursor()
-    c.execute("SELECT verified, referred_by FROM users WHERE user_id=?", (user_id,))
-    row = c.fetchone()
-    if row and row[0] == 0:
-        c.execute("UPDATE users SET verified=1 WHERE user_id=?", (user_id,))
-        referred_by = row[1]
-        if referred_by and referred_by != user_id:
-            c.execute("SELECT user_id FROM users WHERE user_id=?", (referred_by,))
-            if c.fetchone():
-                c.execute("UPDATE users SET balance=balance+?, referrals=referrals+1 WHERE user_id=?",
-                          (REWARD_PER_REFERRAL, referred_by))
-        conn.commit()
-        conn.close()
-        return referred_by
-    conn.close()
-    return None
 
 def get_balance(user_id):
     conn = sqlite3.connect("bot.db")
@@ -135,7 +178,6 @@ def add_withdrawal(user_id, amount, wallet):
     conn.commit()
     conn.close()
 
-# ========== التحقق من الاشتراك ==========
 async def check_subscriptions(user_id, context):
     for channel in CHANNELS:
         try:
@@ -146,7 +188,6 @@ async def check_subscriptions(user_id, context):
             return False
     return True
 
-# ========== لوحة المفاتيح ==========
 def reply_keyboard():
     return ReplyKeyboardMarkup([
         [KeyboardButton("🔗 رابط الإحالة"), KeyboardButton("💰 رصيدي")],
@@ -165,7 +206,6 @@ def verify_keyboard(user_id):
         InlineKeyboardButton("🛡️ فتح صفحة التحقق", web_app=WebAppInfo(url=url))
     ]])
 
-# ========== الأوامر ==========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     args = context.args
@@ -196,17 +236,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if user_data and user_data[6] == 0:
-        referred_by_id = verify_user(user.id)
-        if referred_by_id:
-            try:
-                await context.bot.send_message(
-                    referred_by_id,
-                    f"🎉 انضم شخص جديد عبر رابطك!\n💰 حصلت على +{REWARD_PER_REFERRAL} {CURRENCY}"
-                )
-            except:
-                pass
-
     await update.message.reply_text(
         f"👋 أهلاً {user.first_name}!\n\n"
         f"🤖 بوت الإحالات\n"
@@ -230,15 +259,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         subscribed = await check_subscriptions(user.id, context)
         if subscribed:
-            referred_by_id = verify_user(user.id)
-            if referred_by_id:
-                try:
-                    await context.bot.send_message(
-                        referred_by_id,
-                        f"🎉 انضم شخص جديد عبر رابطك!\n💰 حصلت على +{REWARD_PER_REFERRAL} {CURRENCY}"
-                    )
-                except:
-                    pass
             await query.edit_message_text(f"✅ تم التحقق! أهلاً {user.first_name}")
             await context.bot.send_message(
                 user.id,
@@ -260,6 +280,12 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if context.user_data.get("awaiting_wallet"):
         wallet = text.strip()
+        # تحقق إن العنوان مش فاضي
+        if len(wallet) < 10:
+            await update.message.reply_text(
+                "❌ عنوان المحفظة غير صحيح، أرسل عنوان TON Wallet صحيح:"
+            )
+            return
         amount = context.user_data["withdraw_amount"]
         add_withdrawal(user.id, amount, wallet)
         conn = sqlite3.connect("bot.db")
@@ -318,7 +344,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["awaiting_wallet"] = True
             context.user_data["withdraw_amount"] = round(balance, 3)
             await update.message.reply_text(
-                f"💵 رصيدك المتاح: {round(balance, 3)} {CURRENCY}\n\n📩 أرسل عنوان محفظة TON:"
+                f"💵 رصيدك المتاح: {round(balance, 3)} {CURRENCY}\n\n"
+                f"📩 أرسل عنوان TON Wallet الخاص بك:\n\n"
+                f"⚠️ تأكد من صحة العنوان قبل الإرسال"
             )
     elif text == "📋 شروط الاشتراك":
         await update.message.reply_text(
@@ -347,19 +375,19 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"⏳ طلبات سحب معلقة: {pending}"
     )
 
-# ========== التشغيل ==========
 def main():
+    global bot_app
     init_db()
     t = threading.Thread(target=run_flask)
     t.daemon = True
     t.start()
-    app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("stats", admin_stats))
-    app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+    bot_app = Application.builder().token(BOT_TOKEN).build()
+    bot_app.add_handler(CommandHandler("start", start))
+    bot_app.add_handler(CommandHandler("stats", admin_stats))
+    bot_app.add_handler(CallbackQueryHandler(button_handler))
+    bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
     print("✅ البوت يعمل...")
-    app.run_polling()
+    bot_app.run_polling()
 
 if __name__ == "__main__":
     main()
