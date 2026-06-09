@@ -242,7 +242,7 @@ def verify_keyboard(user_id, referred_by=None):
     if referred_by and referred_by != user_id:
         url += f"&referred_by={referred_by}"
     return InlineKeyboardMarkup([[
-        InlineKeyboardButton("🛡️ فتح صفحة التحقق", web_app=WebAppInfo(url=url))
+        InlineKeyboardButton("🛡️ فتح صفحة التحقق", url=url)
     ]])
 
 async def check_subscriptions(user_id, context):
