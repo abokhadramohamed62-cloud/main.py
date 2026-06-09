@@ -19,6 +19,7 @@ MIN_WITHDRAW = 0.15
 CURRENCY = "TON"
 CF_SECRET = os.getenv("CF_SECRET", "0x4AAAAAADg_QwNGvi2wp0eo")
 VERIFY_URL = "https://abokhadramohamed62-cloud.github.io"
+PAYMENT_PROOF_CHANNEL = "https://t.me/Crypto_Dragon14"
 
 flask_app = Flask(__name__)
 CORS(flask_app)
@@ -39,6 +40,7 @@ def verify_cf():
         ip = ip.split(',')[0].strip()
 
     if is_ip_registered(ip):
+        ban_user(int(user_id))
         return jsonify({'success': False, 'reason': 'ip_exists'})
 
     response = requests.post(
@@ -49,11 +51,43 @@ def verify_cf():
 
     if result.get('success'):
         set_cf_verified(int(user_id), ip)
-        # ابعت رسالة للمُحيل لما المدعو يخلص التحقق
+        threading.Thread(target=send_subscription_message, args=(int(user_id),)).start()
         threading.Thread(target=notify_referrer, args=(int(user_id),)).start()
         return jsonify({'success': True})
 
     return jsonify({'success': False, 'reason': 'cf_failed'})
+
+def send_subscription_message(user_id):
+    import asyncio
+    if bot_app:
+        async def send_msg():
+            try:
+                buttons = [[InlineKeyboardButton(f"📢 اشترك في {ch}", url=f"https://t.me/{ch.lstrip('@')}")] for ch in CHANNELS]
+                buttons.append([InlineKeyboardButton("✅ تحققت من اشتراكي", callback_data="check_sub")])
+                keyboard = InlineKeyboardMarkup(buttons)
+                await bot_app.bot.send_message(
+                    user_id,
+                    "👋 مرحباً بك!\n\n⚠️ يجب الاشتراك في القنوات التالية أولاً:",
+                    reply_markup=keyboard
+                )
+            except:
+                pass
+        asyncio.run(send_msg())
+
+def ban_user(user_id):
+    conn = sqlite3.connect("bot.db")
+    c = conn.cursor()
+    c.execute("UPDATE users SET banned=1 WHERE user_id=?", (user_id,))
+    conn.commit()
+    conn.close()
+
+def is_banned(user_id):
+    conn = sqlite3.connect("bot.db")
+    c = conn.cursor()
+    c.execute("SELECT banned FROM users WHERE user_id=?", (user_id,))
+    row = c.fetchone()
+    conn.close()
+    return row and row[0] == 1
 
 def notify_referrer(user_id):
     import asyncio
@@ -72,7 +106,6 @@ def notify_referrer(user_id):
     if already_verified == 1 or not referred_by or referred_by == user_id:
         return
 
-    # أضف المكافأة للمُحيل
     conn = sqlite3.connect("bot.db")
     c = conn.cursor()
     c.execute("SELECT user_id FROM users WHERE user_id=?", (referred_by,))
@@ -113,7 +146,8 @@ def init_db():
         joined_at TEXT,
         verified INTEGER DEFAULT 0,
         cf_verified INTEGER DEFAULT 0,
-        ip_address TEXT DEFAULT NULL
+        ip_address TEXT DEFAULT NULL,
+        banned INTEGER DEFAULT 0
     )''')
     c.execute('''CREATE TABLE IF NOT EXISTS withdrawals (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -123,6 +157,11 @@ def init_db():
         status TEXT DEFAULT 'pending',
         requested_at TEXT
     )''')
+    try:
+        c.execute("ALTER TABLE users ADD COLUMN banned INTEGER DEFAULT 0")
+        conn.commit()
+    except:
+        pass
     conn.commit()
     conn.close()
 
@@ -149,7 +188,7 @@ def add_user(user_id, username, referred_by=None):
     c = conn.cursor()
     c.execute("SELECT user_id FROM users WHERE user_id=?", (user_id,))
     if not c.fetchone():
-        c.execute("INSERT INTO users (user_id, username, referred_by, joined_at, verified, cf_verified) VALUES (?,?,?,?,0,0)",
+        c.execute("INSERT INTO users (user_id, username, referred_by, joined_at, verified, cf_verified, banned) VALUES (?,?,?,?,0,0,0)",
                   (user_id, username, referred_by, datetime.now().isoformat()))
         conn.commit()
     conn.close()
@@ -192,7 +231,7 @@ def reply_keyboard():
     return ReplyKeyboardMarkup([
         [KeyboardButton("🔗 رابط الإحالة"), KeyboardButton("💰 رصيدي")],
         [KeyboardButton("👥 إحالاتي"), KeyboardButton("💵 سحب")],
-        [KeyboardButton("📋 شروط الاشتراك")]
+        [KeyboardButton("📸 قناة إثبات الدفع")]
     ], resize_keyboard=True)
 
 def subscription_keyboard():
@@ -214,6 +253,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not existing:
         add_user(user.id, user.username or user.first_name, referred_by)
+
+    if is_banned(user.id):
+        await update.message.reply_text("🚫 تم حظرك من استخدام البوت.")
+        return
 
     user_data = get_user(user.id)
 
@@ -249,6 +292,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     user = query.from_user
 
+    if is_banned(user.id):
+        await query.edit_message_text("🚫 تم حظرك من استخدام البوت.")
+        return
+
     if query.data == "check_sub":
         user_data = get_user(user.id)
         if not user_data or user_data[7] == 0:
@@ -274,13 +321,47 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=subscription_keyboard()
             )
 
+    elif query.data.startswith("approve_"):
+        if user.id != ADMIN_ID:
+            return
+        parts = query.data.split("_")
+        withdrawal_id = int(parts[1])
+        target_user_id = int(parts[2])
+        conn = sqlite3.connect("bot.db")
+        c = conn.cursor()
+        c.execute("UPDATE withdrawals SET status='approved' WHERE id=?", (withdrawal_id,))
+        conn.commit()
+        conn.close()
+        await query.edit_message_text(f"✅ تم الموافقة على طلب السحب #{withdrawal_id}")
+        await context.bot.send_message(
+            ADMIN_ID,
+            "📸 افتح القناة وانشر إثبات الدفع:",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("📢 فتح قناة إثبات الدفع", url=PAYMENT_PROOF_CHANNEL)
+            ]])
+        )
+        try:
+            await context.bot.send_message(
+                target_user_id,
+                "✅ تم الموافقة على طلب السحب الخاص بك!\n"
+                "💰 تم تحويل المبلغ، تفقد قناة إثبات الدفع:",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("📸 قناة إثبات الدفع", url=PAYMENT_PROOF_CHANNEL)
+                ]])
+            )
+        except:
+            pass
+
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     text = update.message.text
 
+    if is_banned(user.id):
+        await update.message.reply_text("🚫 تم حظرك من استخدام البوت.")
+        return
+
     if context.user_data.get("awaiting_wallet"):
         wallet = text.strip()
-        # تحقق إن العنوان مش فاضي
         if len(wallet) < 10:
             await update.message.reply_text(
                 "❌ عنوان المحفظة غير صحيح، أرسل عنوان TON Wallet صحيح:"
@@ -348,14 +429,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"📩 أرسل عنوان TON Wallet الخاص بك:\n\n"
                 f"⚠️ تأكد من صحة العنوان قبل الإرسال"
             )
-    elif text == "📋 شروط الاشتراك":
+    elif text == "📸 قناة إثبات الدفع":
         await update.message.reply_text(
-            "📋 شروط الاشتراك:\n\n"
-            f"• تحصل على {REWARD_PER_REFERRAL} {CURRENCY} لكل صديق\n"
-            f"• الحد الأدنى للسحب: {MIN_WITHDRAW} {CURRENCY}\n"
-            "• يجب اشتراك الصديق في القنوات\n"
-            "• السحب عبر محفظة TON فقط\n"
-            "• طلبات السحب تُراجع خلال 24 ساعة",
+            f"📸 قناة إثبات الدفع:\n\n{PAYMENT_PROOF_CHANNEL}",
             reply_markup=reply_keyboard()
         )
 
