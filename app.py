@@ -379,21 +379,32 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if withdrawal and withdrawal[4] != 'approved':
             c.execute("UPDATE withdrawals SET status='approved' WHERE id=?", (withdrawal_id,))
             conn.commit()
+            # جيب اسم المستخدم
+            try:
+                target_user = await context.bot.get_chat(target_user_id)
+                username = f"@{target_user.username}" if target_user.username else target_user.first_name
+            except:
+                username = str(target_user_id)
+            # انشر في قناة إثبات الدفع تلقائياً
+            try:
+                await context.bot.send_message(
+                    "@Crypto_Dragon14",
+                    f"✅ تم الدفع!\n\n"
+                    f"👤 المستخدم: {username}\n"
+                    f"💰 المبلغ: {withdrawal[2]} {CURRENCY}\n"
+                    f"🏦 المحفظة: `{withdrawal[3]}`",
+                    parse_mode="Markdown"
+                )
+            except Exception as e:
+                logger.error(f"خطأ في النشر في القناة: {e}")
         conn.close()
-        await query.edit_message_text(f"✅ تم الموافقة على طلب السحب #{withdrawal_id}")
-        await context.bot.send_message(
-            ADMIN_ID,
-            "📸 انشر إثبات الدفع في القناة:",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("📢 فتح قناة إثبات الدفع", url=PAYMENT_PROOF_CHANNEL)
-            ]])
-        )
+        await query.edit_message_text(f"✅ تم الموافقة ونشر إثبات الدفع #{withdrawal_id}")
         try:
             await context.bot.send_message(
                 target_user_id,
                 "✅ تم الموافقة على طلب السحب!\n💰 تفقد قناة إثبات الدفع:",
                 reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("📸 قناة إثبات الدفع", url=PAYMENT_PROOF_CHANNEL)
+                    InlineKeyboardButton("📸 قناة إثبات الدفع", url="https://t.me/Crypto_Dragon14")
                 ]])
             )
         except Exception as e:
