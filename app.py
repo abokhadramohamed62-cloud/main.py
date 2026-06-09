@@ -22,7 +22,7 @@ CHANNELS = ["@Crypto_Dragon13"]
 REWARD_PER_REFERRAL = 0.03
 MIN_WITHDRAW = 0.15
 CURRENCY = "TON"
-CF_SECRET = os.getenv("CF_SECRET", "0x4AAAAAADg_QwNGvi2wp0eo")
+CF_SECRET = os.getenv("CF_SECRET", "0x4AAAAAADg_QzpMFMb68n4OPqIkwhs1gEI")
 VERIFY_URL = "https://abokhadramohamed62-cloud.github.io"
 PAYMENT_PROOF_CHANNEL = "https://t.me/Crypto_Dragon14"
 
