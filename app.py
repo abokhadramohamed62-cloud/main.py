@@ -7,7 +7,7 @@ from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import requests
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton, WebAppInfo
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
     MessageHandler, filters, ContextTypes
@@ -30,7 +30,6 @@ flask_app = Flask(__name__)
 CORS(flask_app)
 bot_app = None
 
-# ========== قاعدة البيانات ==========
 def init_db():
     conn = sqlite3.connect("bot.db")
     c = conn.cursor()
@@ -146,25 +145,6 @@ async def notify_referrer(user_id):
     except Exception as e:
         logger.error(f"خطأ في إرسال المكافأة: {e}")
 
-def send_subscription_message(user_id):
-    """بعد التحقق تلقائياً ابعت رسالة الاشتراك في القنوات"""
-    async def send_msg():
-        try:
-            buttons = [[InlineKeyboardButton(f"📢 اشترك في {ch}", url=f"https://t.me/{ch.lstrip('@')}")] for ch in CHANNELS]
-            buttons.append([InlineKeyboardButton("✅ تحققت من اشتراكي", callback_data="check_sub")])
-            keyboard = InlineKeyboardMarkup(buttons)
-            await bot_app.bot.send_message(
-                user_id,
-                "👋 مرحباً بك!\n\n⚠️ يجب الاشتراك في القنوات التالية أولاً:",
-                reply_markup=keyboard
-            )
-        except Exception as e:
-            logger.error(f"خطأ في إرسال رسالة الاشتراك: {e}")
-
-    if bot_app:
-        asyncio.run_coroutine_threadsafe(send_msg(), bot_app.updater.loop if hasattr(bot_app, 'updater') else asyncio.new_event_loop())
-
-# ========== Flask ==========
 @flask_app.route('/verify-cf', methods=['POST'])
 def verify_cf():
     try:
@@ -199,10 +179,9 @@ def verify_cf():
             )
             result = response.json()
         except requests.exceptions.Timeout:
-            logger.error("Cloudflare API timeout")
             return jsonify({'success': False, 'reason': 'cf_timeout'})
         except Exception as e:
-            logger.error(f"Cloudflare API error: {e}")
+            logger.error(f"Cloudflare error: {e}")
             return jsonify({'success': False, 'reason': 'cf_error'})
 
         if result.get('success'):
@@ -219,7 +198,6 @@ def verify_cf():
             conn.commit()
             conn.close()
             set_cf_verified(int(user_id), ip)
-            threading.Thread(target=send_subscription_message, args=(int(user_id),)).start()
             return jsonify({'success': True})
 
         return jsonify({'success': False, 'reason': 'cf_failed'})
@@ -235,7 +213,6 @@ def home():
 def run_flask():
     flask_app.run(host='0.0.0.0', port=int(os.getenv('PORT', 8080)))
 
-# ========== لوحة المفاتيح ==========
 def reply_keyboard():
     return ReplyKeyboardMarkup([
         [KeyboardButton("🔗 رابط الإحالة"), KeyboardButton("💰 رصيدي")],
@@ -253,7 +230,7 @@ def verify_keyboard(user_id, referred_by=None):
     if referred_by and referred_by != user_id:
         url += f"&referred_by={referred_by}"
     return InlineKeyboardMarkup([[
-        InlineKeyboardButton("🛡️ فتح صفحة التحقق", web_app=WebAppInfo(url=url))
+        InlineKeyboardButton("🛡️ فتح صفحة التحقق", url=url)
     ]])
 
 async def check_subscriptions(user_id, context):
@@ -267,7 +244,6 @@ async def check_subscriptions(user_id, context):
             return False
     return True
 
-# ========== الأوامر ==========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     args = context.args
@@ -521,15 +497,12 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
             failed += 1
     await update.message.reply_text(f"✅ نجح: {success}\n❌ فشل: {failed}")
 
-# ========== التشغيل ==========
 def main():
     global bot_app
     init_db()
-
     t = threading.Thread(target=run_flask)
     t.daemon = True
     t.start()
-
     bot_app = Application.builder().token(BOT_TOKEN).build()
     bot_app.add_handler(CommandHandler("start", start))
     bot_app.add_handler(CommandHandler("stats", admin_stats))
