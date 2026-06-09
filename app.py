@@ -2,7 +2,6 @@ import os
 import sqlite3
 import threading
 import logging
-import asyncio
 from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -116,6 +115,13 @@ def add_withdrawal(user_id, amount, wallet):
     conn.commit()
     conn.close()
 
+def is_fully_verified(user_id):
+    """تحقق ان المستخدم عمل التحقق من IP والاشتراك في القنوات"""
+    user = get_user(user_id)
+    if not user:
+        return False
+    return user[7] == 1 and user[6] >= 1
+
 async def notify_referrer(user_id):
     conn = sqlite3.connect("bot.db")
     c = conn.cursor()
@@ -123,11 +129,11 @@ async def notify_referrer(user_id):
     row = c.fetchone()
     conn.close()
     if not row:
-        return
+        return False
     referred_by = row[0]
     already_verified = row[1]
     if already_verified == 1 or not referred_by or referred_by == user_id:
-        return
+        return False
     conn = sqlite3.connect("bot.db")
     c = conn.cursor()
     c.execute("SELECT user_id FROM users WHERE user_id=?", (referred_by,))
@@ -136,15 +142,19 @@ async def notify_referrer(user_id):
                   (REWARD_PER_REFERRAL, referred_by))
         c.execute("UPDATE users SET verified=1 WHERE user_id=?", (user_id,))
         conn.commit()
+        conn.close()
+        try:
+            await bot_app.bot.send_message(
+                referred_by,
+                f"🎉 انضم شخص جديد عبر رابطك!\n💰 حصلت على +{REWARD_PER_REFERRAL} {CURRENCY}"
+            )
+        except Exception as e:
+            logger.error(f"خطأ في إرسال المكافأة: {e}")
+        return True
     conn.close()
-    try:
-        await bot_app.bot.send_message(
-            referred_by,
-            f"🎉 انضم شخص جديد عبر رابطك!\n💰 حصلت على +{REWARD_PER_REFERRAL} {CURRENCY}"
-        )
-    except Exception as e:
-        logger.error(f"خطأ في إرسال المكافأة: {e}")
+    return False
 
+# ========== Flask ==========
 @flask_app.route('/verify-cf', methods=['POST'])
 def verify_cf():
     try:
@@ -198,6 +208,22 @@ def verify_cf():
             conn.commit()
             conn.close()
             set_cf_verified(int(user_id), ip)
+
+            # بعد التحقق من IP ابعت رسالة الاشتراك الاجباري تلقائياً
+            if bot_app:
+                import asyncio
+                buttons = [[InlineKeyboardButton(f"📢 اشترك في {ch}", url=f"https://t.me/{ch.lstrip('@')}")] for ch in CHANNELS]
+                buttons.append([InlineKeyboardButton("✅ تحققت من اشتراكي", callback_data="check_sub")])
+                keyboard = InlineKeyboardMarkup(buttons)
+                asyncio.run_coroutine_threadsafe(
+                    bot_app.bot.send_message(
+                        int(user_id),
+                        "✅ تم التحقق من جهازك!\n\n"
+                        "⚠️ الخطوة الأخيرة: اشترك في القنوات التالية:",
+                        reply_markup=keyboard
+                    ),
+                    bot_app.update_queue._loop if hasattr(bot_app, 'update_queue') else asyncio.get_event_loop()
+                )
             return jsonify({'success': True})
 
         return jsonify({'success': False, 'reason': 'cf_failed'})
@@ -213,6 +239,7 @@ def home():
 def run_flask():
     flask_app.run(host='0.0.0.0', port=int(os.getenv('PORT', 8080)))
 
+# ========== لوحة المفاتيح ==========
 def reply_keyboard():
     return ReplyKeyboardMarkup([
         [KeyboardButton("🔗 رابط الإحالة"), KeyboardButton("💰 رصيدي")],
@@ -244,6 +271,7 @@ async def check_subscriptions(user_id, context):
             return False
     return True
 
+# ========== الأوامر ==========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     args = context.args
@@ -267,6 +295,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     user_data = get_user(user.id)
+
+    # المرحلة 1: التحقق من IP
     if not user_data or user_data[7] == 0:
         await update.message.reply_text(
             "🛡️ *التحقق الأمني مطلوب*\n\n"
@@ -277,6 +307,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # المرحلة 2: الاشتراك الاجباري
     subscribed = await check_subscriptions(user.id, context)
     if not subscribed:
         await update.message.reply_text(
@@ -285,6 +316,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # المرحلة 3: إضافة المكافأة وفتح البوت
     if user_data and user_data[6] == 0:
         await notify_referrer(user.id)
 
@@ -307,12 +339,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if query.data == "check_sub":
         user_data = get_user(user.id)
+
+        # تأكد من التحقق من IP أولاً
         if not user_data or user_data[7] == 0:
             await query.edit_message_text(
                 "❌ يجب إتمام التحقق الأمني أولاً!",
                 reply_markup=verify_keyboard(user.id)
             )
             return
+
         subscribed = await check_subscriptions(user.id, context)
         if subscribed:
             await notify_referrer(user.id)
@@ -372,15 +407,22 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🚫 تم حظرك من استخدام البوت.")
         return
 
+    # تأكد من اكتمال التحقق قبل أي عملية
     user_data = get_user(user.id)
-    if user_data and user_data[7] == 1:
-        subscribed = await check_subscriptions(user.id, context)
-        if not subscribed:
-            await update.message.reply_text(
-                "⚠️ يجب الاشتراك في القنوات للمتابعة:",
-                reply_markup=subscription_keyboard()
-            )
-            return
+    if not user_data or user_data[7] == 0:
+        await update.message.reply_text(
+            "🛡️ يجب إتمام التحقق الأمني أولاً:",
+            reply_markup=verify_keyboard(user.id)
+        )
+        return
+
+    subscribed = await check_subscriptions(user.id, context)
+    if not subscribed:
+        await update.message.reply_text(
+            "⚠️ يجب الاشتراك في القنوات للمتابعة:",
+            reply_markup=subscription_keyboard()
+        )
+        return
 
     if context.user_data.get("awaiting_wallet"):
         wallet = text.strip()
