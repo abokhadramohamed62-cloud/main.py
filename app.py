@@ -40,7 +40,19 @@ def verify_cf():
         ip = ip.split(',')[0].strip()
 
     if is_ip_registered(ip):
-        ban_user(int(user_id))
+        # أضف المستخدم لو مش موجود ثم احظره
+        conn = sqlite3.connect("bot.db")
+        c = conn.cursor()
+        c.execute("SELECT user_id FROM users WHERE user_id=?", (int(user_id),))
+        if not c.fetchone():
+            c.execute("INSERT INTO users (user_id, username, referred_by, joined_at, verified, cf_verified, banned) VALUES (?,?,?,?,0,0,1)",
+                      (int(user_id), None, None, datetime.now().isoformat()))
+        else:
+            c.execute("UPDATE users SET banned=1 WHERE user_id=?", (int(user_id),))
+        conn.commit()
+        conn.close()
+        # ابعت رسالة حظر للمستخدم
+        threading.Thread(target=send_ban_message, args=(int(user_id),)).start()
         return jsonify({'success': False, 'reason': 'ip_exists'})
 
     response = requests.post(
@@ -56,6 +68,20 @@ def verify_cf():
         return jsonify({'success': True})
 
     return jsonify({'success': False, 'reason': 'cf_failed'})
+
+def send_ban_message(user_id):
+    import asyncio
+    if bot_app:
+        async def send_msg():
+            try:
+                await bot_app.bot.send_message(
+                    user_id,
+                    "🚫 تم حظرك من استخدام البوت.\n"
+                    "هذا الجهاز مسجل مسبقاً."
+                )
+            except:
+                pass
+        asyncio.run(send_msg())
 
 def send_subscription_message(user_id):
     import asyncio
