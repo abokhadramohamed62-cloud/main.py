@@ -127,7 +127,6 @@ async def notify_referrer(user_id):
         return
     referred_by = row[0]
     already_verified = row[1]
-    # منع الإحالة الذاتية
     if already_verified == 1 or not referred_by or referred_by == user_id:
         return
     conn = sqlite3.connect("bot.db")
@@ -147,6 +146,24 @@ async def notify_referrer(user_id):
     except Exception as e:
         logger.error(f"خطأ في إرسال المكافأة: {e}")
 
+def send_subscription_message(user_id):
+    """بعد التحقق تلقائياً ابعت رسالة الاشتراك في القنوات"""
+    async def send_msg():
+        try:
+            buttons = [[InlineKeyboardButton(f"📢 اشترك في {ch}", url=f"https://t.me/{ch.lstrip('@')}")] for ch in CHANNELS]
+            buttons.append([InlineKeyboardButton("✅ تحققت من اشتراكي", callback_data="check_sub")])
+            keyboard = InlineKeyboardMarkup(buttons)
+            await bot_app.bot.send_message(
+                user_id,
+                "👋 مرحباً بك!\n\n⚠️ يجب الاشتراك في القنوات التالية أولاً:",
+                reply_markup=keyboard
+            )
+        except Exception as e:
+            logger.error(f"خطأ في إرسال رسالة الاشتراك: {e}")
+
+    if bot_app:
+        asyncio.run_coroutine_threadsafe(send_msg(), bot_app.updater.loop if hasattr(bot_app, 'updater') else asyncio.new_event_loop())
+
 # ========== Flask ==========
 @flask_app.route('/verify-cf', methods=['POST'])
 def verify_cf():
@@ -159,7 +176,6 @@ def verify_cf():
         if not token or not user_id:
             return jsonify({'success': False, 'reason': 'missing_data'})
 
-        # منع الإحالة الذاتية
         if referred_by and str(referred_by) == str(user_id):
             return jsonify({'success': False, 'reason': 'self_referral'})
 
@@ -173,14 +189,8 @@ def verify_cf():
             c.execute("UPDATE users SET banned=1 WHERE user_id=?", (int(user_id),))
             conn.commit()
             conn.close()
-            if bot_app:
-                asyncio.run_coroutine_threadsafe(
-                    bot_app.bot.send_message(int(user_id), "🚫 تم حظرك لأن هذا الجهاز مسجل مسبقاً."),
-                    bot_app.loop if hasattr(bot_app, 'loop') else asyncio.get_event_loop()
-                )
             return jsonify({'success': False, 'reason': 'ip_exists'})
 
-        # التحقق من Cloudflare مع معالجة الأخطاء
         try:
             response = requests.post(
                 'https://challenges.cloudflare.com/turnstile/v0/siteverify',
@@ -209,6 +219,7 @@ def verify_cf():
             conn.commit()
             conn.close()
             set_cf_verified(int(user_id), ip)
+            threading.Thread(target=send_subscription_message, args=(int(user_id),)).start()
             return jsonify({'success': True})
 
         return jsonify({'success': False, 'reason': 'cf_failed'})
@@ -242,7 +253,7 @@ def verify_keyboard(user_id, referred_by=None):
     if referred_by and referred_by != user_id:
         url += f"&referred_by={referred_by}"
     return InlineKeyboardMarkup([[
-        InlineKeyboardButton("🛡️ فتح صفحة التحقق", url=url)
+        InlineKeyboardButton("🛡️ فتح صفحة التحقق", web_app=WebAppInfo(url=url))
     ]])
 
 async def check_subscriptions(user_id, context):
@@ -262,7 +273,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     referred_by = int(args[0]) if args and args[0].isdigit() else None
 
-    # منع الإحالة الذاتية
     if referred_by and referred_by == user.id:
         referred_by = None
 
