@@ -17,8 +17,8 @@ logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "ضع_توكن_البوت_هنا")
 ADMIN_ID = 868999453
-CHANNELS = ["@Crypto_Dragon13"]
-REWARD_PER_REFERRAL = 0.03
+CHANNELS = ["@Crypto_Dragon13", "@KingsCrypto770", "@hazarcrypto", "@Crypto_Kings5", "@hh6442"]
+REWARD_PER_REFERRAL = 0.015
 MIN_WITHDRAW = 0.15
 CURRENCY = "TON"
 CF_SECRET = os.getenv("CF_SECRET", "0x4AAAAAADg_QzpMFMb68n4OPqIkwhs1gEI")
